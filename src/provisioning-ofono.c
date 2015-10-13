@@ -32,7 +32,6 @@
 #define OFONO_MODEM_INTERFACE	OFONO_SERVICE ".Modem"
 #define OFONO_GPRS_INTERFACE	OFONO_SERVICE ".ConnectionManager"
 #define OFONO_CONTEXT_INTERFACE	OFONO_SERVICE ".ConnectionContext"
-#define MULTIMODEM
 
 struct modem_data {
 	char *path;
@@ -60,9 +59,7 @@ struct ofono_mms{
 	dbus_bool_t context_active;
 };
 
-#ifdef MULTIMODEM
 static GHashTable *modem_list;
-#endif
 
 guint call_counter;
 guint idle_id;
@@ -87,8 +84,7 @@ static void clean_provisioning()
 		g_source_remove(timer_id);
 
 	send_signal(signal_prov);
-
-	remove_modems();
+	g_hash_table_destroy(modem_list);
 	clean_provisioning_data();
 	handle_exit(NULL);
 }
@@ -1102,7 +1098,6 @@ static void remove_modems()
 		}
 		keys = keys->next;
 	}
-	
 }
 
 static void create_modem(DBusConnection *conn, const char *path,
@@ -1159,9 +1154,7 @@ static void create_modem(DBusConnection *conn, const char *path,
 
 	LOG("path %s", modem->path);
 
-#ifdef MULTIMODEM
 	g_hash_table_replace(modem_list, modem->path, modem);
-#endif
 
 	dbus_message_iter_recurse(iter, &dict);
 
@@ -1282,10 +1275,9 @@ int provisioning_init_ofono(void)
  * Currently this assumes that only one modem in ofono if need to support more
  * it could be something like below
  */
-#ifdef MULTIMODEM
 	modem_list = g_hash_table_new_full(g_str_hash, g_str_equal,
 						NULL, remove_modems);
-#endif
+
 	ret = get_modems(connection);
 	if (ret < 0)
 		goto exit;
@@ -1297,6 +1289,4 @@ exit:
 void provisioning_exit_ofono(void)
 {
 	clean_provisioning();
-
-	g_hash_table_destroy(modem_list);
 }
