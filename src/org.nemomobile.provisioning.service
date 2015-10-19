@@ -1,4 +1,0 @@
-[D-BUS Service]
-Name=org.nemomobile.provisioning
-Exec=/bin/false
-SystemdService=dbus-org.nemomobile.provisioning.service
