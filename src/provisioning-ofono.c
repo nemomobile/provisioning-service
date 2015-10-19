@@ -59,11 +59,7 @@ struct ofono_mms{
 	dbus_bool_t context_active;
 };
 
-#ifdef MULTIMODEM
 static GHashTable *modem_list;
-#endif
-
-struct modem_data *ofono_modem;
 
 guint call_counter;
 guint idle_id;
@@ -75,7 +71,7 @@ static gboolean check_idle();
 static void provisioning_internet(struct modem_data *modem, struct internet *net);
 static void provisioning_mms(struct modem_data *modem, struct w4 *mms);
 static void provisioning_w2(struct modem_data *modem, struct w2 *mms);
-static void remove_modem();
+static void remove_modems();
 
 static void clean_provisioning()
 {
@@ -88,8 +84,7 @@ static void clean_provisioning()
 		g_source_remove(timer_id);
 
 	send_signal(signal_prov);
-
-	remove_modem();
+	g_hash_table_destroy(modem_list);
 	clean_provisioning_data();
 	handle_exit(NULL);
 }
@@ -157,8 +152,21 @@ static void deactivate_internet_context_reply(DBusPendingCall *call,
 {
 	DBusMessage *reply = dbus_pending_call_steal_reply(call);
 	DBusError err;
-	struct modem_data *modem;
+	struct modem_data *modem = NULL;
 	struct provisioning_data *prov_data;
+	GList *keys = g_hash_table_get_keys(modem_list);
+
+	LOG("In deactivate_internet_context_reply ");
+
+	while (keys != NULL) {
+		modem = g_hash_table_lookup(modem_list, keys->data);
+		
+		if (modem->gprs_attached) {
+			LOG("Valid path found: %s",modem->path);
+			break;
+		}
+		keys = keys->next;
+	}
 
 	dbus_error_init(&err);
 
@@ -195,7 +203,7 @@ static void deactivate_internet_context_reply(DBusPendingCall *call,
 		clean_provisioning();
 		return;
 	}
-	modem = ofono_modem;
+
 	modem->oi->context_active = FALSE;
 
 	if (prov_data->internet->apn)
@@ -214,10 +222,25 @@ static void deactivate_mms_context_reply(DBusPendingCall *call, void *user_data)
 {
 	DBusMessage *reply = dbus_pending_call_steal_reply(call);
 	DBusError err;
-	struct modem_data *modem;
+	struct modem_data *modem = NULL;
 	struct provisioning_data *prov_data;
 
 	dbus_error_init(&err);
+
+	GList *keys = g_hash_table_get_keys(modem_list);
+
+	LOG("In deactivate mms context reply");
+
+	while (keys != NULL ) {
+		modem = g_hash_table_lookup(modem_list, keys->data);
+
+		if (modem->gprs_attached) {
+			LOG("MMS Valid path found: %s",modem->path);
+			break;
+		}
+		
+		keys = keys->next;
+	}
 
 	if (dbus_set_error_from_message(&err, reply) == TRUE) {
 		LOG("deactivate_mms_context_reply:%s: %s",
@@ -252,7 +275,7 @@ static void deactivate_mms_context_reply(DBusPendingCall *call, void *user_data)
 		clean_provisioning();
 		return;
 	}
-	modem = ofono_modem;
+
 	modem->omms->context_active = FALSE;
 
 	if (prov_data->w4->apn)
@@ -336,8 +359,19 @@ static void add_mms_context_reply(DBusPendingCall *call, void *user_data)
 	DBusMessage *reply = dbus_pending_call_steal_reply(call);
 	DBusError err;
 	const char *path;
-	struct modem_data *modem;
+	struct modem_data *modem = NULL;
 	struct provisioning_data *prov_data;
+	GList *keys = g_hash_table_get_keys(modem_list);
+
+	while (keys != NULL) {
+		modem = g_hash_table_lookup(modem_list, keys->data);
+
+		if (modem->gprs_attached) {
+			break;
+		}
+		
+		keys = keys->next;
+	}
 
 	LOG("add_mms_context_reply");
 	dbus_error_init(&err);
@@ -362,7 +396,6 @@ static void add_mms_context_reply(DBusPendingCall *call, void *user_data)
 		goto exit;
 	}
 
-	modem = ofono_modem;
 	modem->omms->context_path = g_strdup(path);
 	modem->omms->context_active = FALSE;
 
@@ -392,8 +425,19 @@ static void add_internet_context_reply(DBusPendingCall *call, void *user_data)
 	DBusMessage *reply = dbus_pending_call_steal_reply(call);
 	DBusError err;
 	const char *path;
-	struct modem_data *modem;
+	struct modem_data *modem = NULL;
 	struct provisioning_data *prov_data;
+	GList *keys = g_hash_table_get_keys(modem_list);
+
+	while (keys != NULL) {
+		modem = g_hash_table_lookup(modem_list, keys->data);
+
+		if (modem->gprs_attached) {
+			break;
+		}
+		
+		keys = keys->next;
+	}
 
 	LOG("add_internet_context_reply");
 	dbus_error_init(&err);
@@ -419,7 +463,6 @@ static void add_internet_context_reply(DBusPendingCall *call, void *user_data)
 		goto exit;
 	}
 
-	modem = ofono_modem;
 	modem->oi->context_path = g_strdup(path);
 	modem->oi->context_active = FALSE;
 
@@ -968,8 +1011,7 @@ done:
 	if (modem->gprs_attached) {
 		if (get_contexts(modem) < 0)
 			clean_provisioning();
-	} else
-		clean_provisioning();
+	}
 }
 static int get_gprs_properties(struct modem_data *modem)
 {
@@ -1025,30 +1067,36 @@ static void check_interfaces(struct modem_data *modem, DBusMessageIter *iter)
 	if (has_gprs) {
 		if (get_gprs_properties(modem) < 0)
 			clean_provisioning();
-	} else
-		clean_provisioning();
+	} else {
+		LOG("Provisioning failed for modem path: %s",modem->path);
+	}
 
 }
-static void remove_modem()
+static void remove_modems()
 {
-	struct modem_data *modem = ofono_modem;
+	struct modem_data *modem;
+	GList *keys = g_hash_table_get_keys(modem_list);
 
-	if (modem != NULL) {
-		LOG("remove_modem");
-		dbus_connection_unref(modem->conn);
+	while (keys != NULL) {
+		modem = g_hash_table_lookup(modem_list, keys->data);
+		if (modem != NULL) {
+			LOG("remove_modem path: %s",modem->path);
+			dbus_connection_unref(modem->conn);
 
-		g_free(modem->temp->context_path);
-		g_free(modem->temp->type);
-		g_free(modem->temp);
+			g_free(modem->temp->context_path);
+			g_free(modem->temp->type);
+			g_free(modem->temp);
 
-		g_free(modem->oi->context_path);
-		g_free(modem->oi);
+			g_free(modem->oi->context_path);
+			g_free(modem->oi);
 
-		g_free(modem->omms->context_path);
-		g_free(modem->omms);
+			g_free(modem->omms->context_path);
+			g_free(modem->omms);
 
-		g_free(modem->path);
-		g_free(modem);
+			g_free(modem->path);
+			g_free(modem);
+		}
+		keys = keys->next;
 	}
 }
 
@@ -1106,10 +1154,8 @@ static void create_modem(DBusConnection *conn, const char *path,
 
 	LOG("path %s", modem->path);
 
-#ifdef MULTIMODEM
 	g_hash_table_replace(modem_list, modem->path, modem);
-#endif
-	ofono_modem = modem;
+
 	dbus_message_iter_recurse(iter, &dict);
 
 	while (dbus_message_iter_get_arg_type(&dict) == DBUS_TYPE_DICT_ENTRY) {
@@ -1217,7 +1263,6 @@ int provisioning_init_ofono(void)
 	call_counter = 0;
 	idle_id = 0;
 	ret = 0;
-	ofono_modem = NULL;
 	signal_prov = PROV_FAILURE;
 	prov_failure = FALSE;
 
@@ -1230,10 +1275,9 @@ int provisioning_init_ofono(void)
  * Currently this assumes that only one modem in ofono if need to support more
  * it could be something like below
  */
-#ifdef MULTIMODEM
 	modem_list = g_hash_table_new_full(g_str_hash, g_str_equal,
-						NULL, remove_modem);
-#endif
+						NULL, remove_modems);
+
 	ret = get_modems(connection);
 	if (ret < 0)
 		goto exit;
